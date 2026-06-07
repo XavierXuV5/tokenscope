@@ -2,6 +2,8 @@
 
 **English** · [中文](README-zh.md)
 
+<a href="https://www.producthunt.com/products/tokenscope-2?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tokenscope-2" target="_blank" rel="noopener noreferrer"><img alt="Tokenscope - MacOS menu-bar dashboard for Claude CLI token usage | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1165012&amp;theme=light&amp;t=1780816780292"></a>
+
 A macOS menu-bar app that shows your Claude CLI **daily token usage, estimated cost, and per-model / MCP / Skill call breakdown**.
 
 Stack: **Tauri 2 + React + TypeScript** (frontend) / **Rust** (data layer).

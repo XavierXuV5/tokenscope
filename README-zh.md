@@ -2,6 +2,8 @@
 
 [English](README.md) · **中文**
 
+<a href="https://www.producthunt.com/products/tokenscope-2?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tokenscope-2" target="_blank" rel="noopener noreferrer"><img alt="Tokenscope - MacOS menu-bar dashboard for Claude CLI token usage | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1165012&amp;theme=light&amp;t=1780816780292"></a>
+
 macOS 菜单栏工具，展示 Claude CLI 的 **每日 Token 用量、估算花费、按模型 / MCP / Skill 的调用统计**。
 
 技术栈：**Tauri 2 + React + TypeScript**（前端）/ **Rust**（数据层）。
@@ -51,7 +53,7 @@ brew install --cask hdusy/tokenscope/tokenscope
 升级：
 
 ```bash
-brew upgrade --cask tokenscope
+rm -rf "$(brew --repository)/Library/Taps/hdusy/homebrew-tokenscope" && brew tap HduSy/tokenscope && brew install --cask tokenscope
 ```
 
 ### 方式二：下载 .dmg
