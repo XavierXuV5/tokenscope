@@ -11,5 +11,6 @@ public/dev-dashboard.json
 
 # misc
 .DS_Store
+.history/
 *.log
 claude-design-files/
