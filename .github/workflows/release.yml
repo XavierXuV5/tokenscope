@@ -75,6 +75,23 @@ jobs:
           prerelease: false
           args: --target universal-apple-darwin
 
+      # Append an auto-generated changelog (PRs/commits since the previous tag)
+      # to the release notes. Best-effort: never fail the release over notes.
+      - name: Add changelog to release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gen=$(gh api --method POST \
+            "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${{ github.ref_name }}" --jq '.body' || true)
+          cur=$(gh release view "${{ github.ref_name }}" --json body --jq '.body' || true)
+          {
+            printf '%s\n' "$cur"
+            if [ -n "$gen" ]; then printf '\n%s\n' "$gen"; fi
+          } > release-body.md
+          gh release edit "${{ github.ref_name }}" --notes-file release-body.md
+
       - name: Update Homebrew Cask
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
