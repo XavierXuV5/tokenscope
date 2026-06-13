@@ -48,8 +48,15 @@ fn show_popover(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn get_dashboard() -> Dashboard {
-    parser::build_dashboard()
+fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
+    let dash = parser::build_dashboard();
+    // Sync the tray count to this freshly-fetched value. The panel refetches the
+    // instant it opens, while the tray otherwise only refreshes every 30s — so
+    // without this the two could disagree for up to 30s during heavy usage.
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_title(Some(fmt_tokens_m(dash.today_tokens)));
+    }
+    dash
 }
 
 /// For CLI/example validation against real logs.
