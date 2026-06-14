@@ -137,9 +137,9 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
   const total = models.reduce((s, m) => s + m.cost, 0) || 1e-9;
   const cx = size / 2, cy = size / 2;
   const rOut = (size - 2) / 2, rIn = rOut - thickness;
-  // Inter-segment gap, only meaningful when there's more than one wedge to
-  // separate. A single segment is drawn as a closed ring (see render below).
-  const gap = models.length > 1 ? 0.045 : 0;
+  // No inter-segment gap: wedges butt together into one continuous solid ring.
+  // (Segments stay distinguishable by colour and the hover dim.)
+  const gap = 0;
   let a = -Math.PI / 2;
   const arc = (a0: number, a1: number, rO: number, rI: number) => {
     const large = a1 - a0 > Math.PI ? 1 : 0;
@@ -167,9 +167,8 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ overflow: "visible" }}>
           {models.length === 1 ? (
             // Single model: a full closed ring (one 360° arc would be
-            // degenerate, and the inter-segment gap would leave it open). Trace
-            // both edges with a 1px card-coloured stroke for a crisp inset look,
-            // matching the gapped multi-wedge donut.
+            // degenerate). Trace both edges with a 1px card-coloured stroke for
+            // a crisp inset look.
             <g onMouseEnter={() => setHi(0)} onMouseLeave={() => setHi(-1)} style={{ cursor: "default" }}>
               <circle cx={cx} cy={cy} r={(rOut + rIn) / 2}
                 fill="none" stroke={models[0].color} strokeWidth={thickness} />
