@@ -185,7 +185,7 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
           )}
         </svg>
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-          <span style={{ font: `600 ${fit.toFixed(1)}px ${t.mono}`, color: cur ? cur.color : t.text, lineHeight: 1, letterSpacing: "-.01em" }}>{txt}</span>
+          <span style={{ font: `600 ${fit.toFixed(1)}px/1 ${t.mono}`, color: cur ? cur.color : t.text, letterSpacing: "-.01em" }}>{txt}</span>
         </div>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>

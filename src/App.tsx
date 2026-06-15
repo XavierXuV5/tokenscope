@@ -96,7 +96,7 @@ function MiniStat({ label, value, sub, theme, accent, children }:
     <div style={{ background: theme.gridLine, borderRadius: 9, padding: "9px 10px", minWidth: 0 }}>
       <div style={{ font: `500 9.5px ${theme.ui}`, color: theme.dim, letterSpacing: ".04em", textTransform: "uppercase" }}>{label}</div>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginTop: 3, gap: 6 }}>
-        <span style={{ font: `600 17px ${theme.mono}`, color: accent || theme.text, lineHeight: 1 }}>{value}</span>
+        <span style={{ font: `600 17px/1 ${theme.mono}`, color: accent || theme.text }}>{value}</span>
         {children}
       </div>
       {sub && <div style={{ font: `500 9px ${theme.mono}`, color: theme.faint, marginTop: 3 }}>{sub}</div>}
@@ -139,7 +139,7 @@ const Label = ({ t, children }: { t: Theme; children: React.ReactNode }) => (
 function ThemeToggle({ dark, theme, onToggle }: { dark: boolean; theme: Theme; onToggle: () => void }) {
   const t = theme;
   return (
-    <button onClick={onToggle} title={dark ? "切换到浅色" : "切换到深色"} aria-label="toggle theme" style={{
+    <button onClick={onToggle} title={dark ? "Switch to light" : "Switch to dark"} aria-label="toggle theme" style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
       width: 26, height: 26, borderRadius: 7, cursor: "pointer", padding: 0,
       background: t.segBg, border: `1px solid ${t.segBorder}`, color: t.dim,
@@ -250,9 +250,9 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
           ? <CostDonut models={costModels} theme={t} size={100} thickness={15} />
           : <div style={{ font: `500 10.5px ${t.mono}`, color: t.faint }}>—</div>}
         {unpricedModels.length > 0 && (
-          <div style={{ marginTop: 9, font: `500 9.5px ${t.mono}`, color: t.faint, lineHeight: 1.5 }}>
-            {unpricedModels.length} 个模型暂无定价数据（成本未计入）：
-            <span style={{ color: t.dim }}>{unpricedModels.map((m) => m.name).join("、")}</span>
+          <div style={{ marginTop: 9, font: `500 9.5px/1.5 ${t.mono}`, color: t.faint }}>
+            {unpricedModels.length} model{unpricedModels.length > 1 ? "s" : ""} without pricing data (cost not counted):{" "}
+            <span style={{ color: t.dim }}>{unpricedModels.map((m) => m.name).join(", ")}</span>
           </div>
         )}
         <SectionRule t={t} m="12px 0 12px" />
@@ -353,7 +353,7 @@ export default function App() {
 
   const t = TH[dark ? "dark" : "light"];
   if (err) {
-    return <div style={{ padding: 20, font: `500 12px ${t.mono}`, color: "#e0795f" }}>加载失败：{err}</div>;
+    return <div style={{ padding: 20, font: `500 12px ${t.mono}`, color: "#e0795f" }}>Failed to load: {err}</div>;
   }
   if (!dash) {
     return (
