@@ -5,7 +5,7 @@ mod pricing;
 mod store;
 
 use model::Dashboard;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
@@ -41,7 +41,157 @@ fn refresh(app: &tauri::AppHandle) {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_title(Some(fmt_tokens_m(dash.today_tokens)));
     }
+    check_milestones(app, &dash);
     let _ = app.emit("dashboard-updated", &dash);
+}
+
+/// 100M-token celebration state. `floors` holds the last-seen ⌊total/100M⌋ for
+/// (week, month); `None` until the first observation baselines it (so we never
+/// fire retroactively for usage that already happened before launch). `active`
+/// guards against overlapping celebrations.
+struct Celebration {
+    floors: std::sync::Mutex<Option<(i64, i64)>>,
+    active: AtomicBool,
+}
+
+/// Fire one full-screen celebration whenever the week OR month total crosses a
+/// new 100M-token boundary. We watch only week ∪ month, not day: today is always
+/// within both the current week and month, so a day crossing is already implied
+/// by the month — but a calendar week can straddle a month boundary, so early in
+/// a month the week total can lead the (freshly reset) month, hence both.
+/// Dedup is inherent: a single chunk of usage advancing both floors at once
+/// still calls celebrate() once.
+fn check_milestones(app: &tauri::AppHandle, dash: &Dashboard) {
+    let Some(state) = app.try_state::<Celebration>() else {
+        return;
+    };
+    // total_tokens is already in millions, so a 100M milestone is total / 100.
+    let wf = (dash.week.metrics.total_tokens / 100.0).floor() as i64;
+    let mf = (dash.month.metrics.total_tokens / 100.0).floor() as i64;
+    let mut g = state.floors.lock().unwrap();
+    let fire = match *g {
+        None => false, // first observation: baseline only, never celebrate
+        Some((pw, pm)) => wf > pw || mf > pm,
+    };
+    *g = Some((wf, mf)); // always update (also walks the baseline back down on a period reset)
+    drop(g);
+    if fire {
+        celebrate(app);
+    }
+}
+
+/// Trigger the celebration overlay. Window/panel work must run on the main
+/// thread (refresh() runs on a background thread), so hop there.
+fn celebrate(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || show_celebration(&handle));
+}
+
+/// Show (or reuse) a full-screen, click-through, non-activating overlay on the
+/// primary monitor and run the confetti animation, then hide it after it plays.
+/// Must be called on the main thread.
+fn show_celebration(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<Celebration>() else {
+        return;
+    };
+    // Skip if a celebration is already playing.
+    if state.active.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let (pos, size) = match app.primary_monitor() {
+        Ok(Some(m)) => (*m.position(), *m.size()),
+        _ => {
+            state.active.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let existed = app.get_webview_window("confetti").is_some();
+    let win = match app.get_webview_window("confetti") {
+        Some(w) => w,
+        None => {
+            match tauri::WebviewWindowBuilder::new(
+                app,
+                "confetti",
+                tauri::WebviewUrl::App("confetti.html".into()),
+            )
+            .title("Tokenscope Celebration")
+            .inner_size(size.width as f64, size.height as f64)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .resizable(false)
+            .visible(false)
+            .build()
+            {
+                Ok(w) => w,
+                Err(_) => {
+                    state.active.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+        }
+    };
+
+    // Cover the whole primary monitor and let clicks pass through to the apps
+    // beneath — the celebration must never interrupt what the user is doing.
+    let _ = win.set_position(pos);
+    let _ = win.set_size(size);
+    let _ = win.set_ignore_cursor_events(true);
+
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
+        #[allow(non_upper_case_globals)]
+        const NS_NONACTIVATING_PANEL: i32 = 1 << 7;
+
+        // Convert to a non-activating panel once, so it can float over apps in
+        // native fullscreen without stealing focus (same approach as the main
+        // popover). On reuse the window is already a panel.
+        if !existed {
+            if let Ok(panel) = win.to_panel() {
+                panel.set_level(25); // NSMainMenuWindowLevel (24) + 1
+                panel.set_style_mask(NS_NONACTIVATING_PANEL);
+                panel.set_collection_behaviour(
+                    NSWindowCollectionBehavior::NSWindowCollectionBehaviorMoveToActiveSpace
+                        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+                );
+            }
+        }
+        let _ = win.eval("window.__burst&&window.__burst()");
+        if let Ok(panel) = app.get_webview_panel("confetti") {
+            panel.show();
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = win.eval("window.__burst&&window.__burst()");
+        let _ = win.show();
+    }
+
+    // Hide once the animation has played out (emission ~2.3s + fall/fade).
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(4200));
+        let app3 = app2.clone();
+        let _ = app2.run_on_main_thread(move || {
+            #[cfg(target_os = "macos")]
+            if let Ok(panel) = app3.get_webview_panel("confetti") {
+                panel.order_out(None);
+            }
+            #[cfg(not(target_os = "macos"))]
+            if let Some(w) = app3.get_webview_window("confetti") {
+                let _ = w.hide();
+            }
+            if let Some(st) = app3.try_state::<Celebration>() {
+                st.active.store(false, Ordering::SeqCst);
+            }
+        });
+    });
 }
 
 /// Last tray-icon rectangle (physical px: x, y, width, height), captured on tray
@@ -193,6 +343,7 @@ fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_title(Some(fmt_tokens_m(dash.today_tokens)));
     }
+    check_milestones(&app, &dash);
     dash
 }
 
@@ -252,6 +403,12 @@ pub fn run() {
             // Holds the latest tray-icon rect so show_popover can anchor the panel.
             #[cfg(target_os = "macos")]
             app.manage(TrayAnchor(std::sync::Mutex::new(None)));
+
+            // 100M-token celebration tracking (baselined on first observation).
+            app.manage(Celebration {
+                floors: std::sync::Mutex::new(None),
+                active: AtomicBool::new(false),
+            });
 
             // Launch at login (idempotent — safe to call every start).
             let _ = app.autolaunch().enable();
