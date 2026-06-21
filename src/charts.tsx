@@ -205,11 +205,13 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
 export function BarList({ items, theme, accent, limit = 5 }:
   { items: NamedCount[]; theme: Theme; accent?: string; limit?: number }) {
   const t = theme; accent = accent || t.accent;
-  const shown = items.slice(0, limit);
-  // Bar length = this item's share of the *total* calls (count / total), so the
-  // track (light) is the whole, the fill (accent) is the percentage — same logic
-  // as the Total-tokens bar.
-  const total = items.reduce((s, i) => s + i.count, 0) || 1;
+  const [open, setOpen] = useState(false);
+  const shown = items.slice(0, open ? items.length : limit);
+  // Bar length = this item's count relative to the *most-called* item
+  // (count / max), so top1 fills the track and the rest scale down — same logic
+  // as ModelRow's token bars, and gives a descending comparison ladder even when
+  // usage is spread across many skills (count / total leaves every bar tiny).
+  const max = items.reduce((m, i) => Math.max(m, i.count), 0) || 1;
   const more = items.length - shown.length;
   return (
     <div>
@@ -220,12 +222,23 @@ export function BarList({ items, theme, accent, limit = 5 }:
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "3px 0" }}>
           <span style={{ font: `500 10.5px ${t.mono}`, color: t.text, flex: "0 0 134px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.name}</span>
           <div style={{ flex: 1, height: 5, borderRadius: 3, background: t.gridLine, overflow: "hidden" }}>
-            <div style={{ width: `${(it.count / total) * 100}%`, height: "100%", background: accent, borderRadius: 3 }} />
+            <div style={{ width: `${(it.count / max) * 100}%`, height: "100%", background: accent, borderRadius: 3 }} />
           </div>
           <span style={{ font: `600 10.5px ${t.mono}`, color: t.dim, flex: "0 0 auto", minWidth: 30, textAlign: "right" }}>{fmtInt(it.count)}</span>
         </div>
       ))}
-      {more > 0 && <div style={{ font: `500 9.5px ${t.ui}`, color: t.faint, paddingTop: 4 }}>+{more} more</div>}
+      {more > 0 && (
+        <div onClick={() => setOpen(true)} style={{ font: `500 9.5px ${t.ui}`, color: t.faint, paddingTop: 4, cursor: "pointer", userSelect: "none" }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = t.dim)} onMouseLeave={(e) => (e.currentTarget.style.color = t.faint)}>
+          +{more} more
+        </div>
+      )}
+      {open && items.length > limit && (
+        <div onClick={() => setOpen(false)} style={{ font: `500 9.5px ${t.ui}`, color: t.faint, paddingTop: 4, cursor: "pointer", userSelect: "none" }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = t.dim)} onMouseLeave={(e) => (e.currentTarget.style.color = t.faint)}>
+          show less
+        </div>
+      )}
     </div>
   );
 }
