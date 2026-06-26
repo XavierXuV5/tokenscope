@@ -82,7 +82,7 @@ After you open it once it registers as a login item, then **launches in the menu
 Upgrade:
 
 ```bash
-rm -rf "$(brew --repository)/Library/Taps/hdusy/homebrew-tokenscope" && brew tap HduSy/tokenscope && brew install --cask tokenscope
+brew update && brew upgrade --cask tokenscope
 ```
 
 ### Option 2: Download the .dmg

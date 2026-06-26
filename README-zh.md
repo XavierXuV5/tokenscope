@@ -82,7 +82,7 @@ brew install --cask hdusy/tokenscope/tokenscope
 升级：
 
 ```bash
-rm -rf "$(brew --repository)/Library/Taps/hdusy/homebrew-tokenscope" && brew tap HduSy/tokenscope && brew install --cask tokenscope
+brew update && brew upgrade --cask tokenscope
 ```
 
 ### 方式二：下载 .dmg
