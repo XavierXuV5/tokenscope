@@ -6,6 +6,7 @@ transparent, not white). Renders at 4x and downsamples for clean anti-aliasing.
 Output: src-tauri/icons/icon.png (1024x1024). Run `pnpm tauri icon` afterwards
 to regenerate every platform size + icon.icns + icon.ico from this source.
 """
+from pathlib import Path
 from PIL import Image, ImageDraw
 
 S = 4                      # supersample factor
@@ -51,7 +52,12 @@ for i, hf in enumerate(heights):
 
 # downsample to 1024 with high-quality resampling
 out = img.resize((1024, 1024), Image.LANCZOS)
-out.save("/Users/rayonreal/DEV/AI/tokenscope/src-tauri/icons/icon.png")
+# Resolve the output path from this script's location so it works on any
+# machine (the original was hard-coded to the author's macOS path).
+out_path = Path(__file__).resolve().parent.parent / "src-tauri" / "icons" / "icon.png"
+out_path.parent.mkdir(parents=True, exist_ok=True)
+out.save(out_path)
+print(f"wrote {out_path}")
 
 # sanity: report corners + center
 w, h = out.size
