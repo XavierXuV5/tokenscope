@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
@@ -92,6 +92,52 @@ fn save_milestones(m: &MilestoneState) {
             let _ = std::fs::write(p, t);
         }
     }
+}
+
+// ── Launch-at-login preference ──────────────────────────────────────
+// Persisted in the data dir (survives restarts/updates, like milestones). The
+// on/off toggle lives in the tray's right-click menu; on startup we reconcile
+// the OS registration to this preference rather than force-enabling every
+// launch (which silently undid a user who had turned autostart off).
+fn autostart_pref_path() -> Option<std::path::PathBuf> {
+    let dir = dirs::data_dir()?.join("tokenscope");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("autostart.json"))
+}
+
+fn load_autostart_pref() -> Option<bool> {
+    let t = std::fs::read_to_string(autostart_pref_path()?).ok()?;
+    serde_json::from_str(&t).ok()
+}
+
+fn save_autostart_pref(on: bool) {
+    if let Some(p) = autostart_pref_path() {
+        if let Ok(t) = serde_json::to_string(&on) {
+            let _ = std::fs::write(p, t);
+        }
+    }
+}
+
+/// Bring the OS launch-at-login registration in line with the saved preference,
+/// returning the effective preference (used to seed the menu checkbox). First
+/// run (no saved pref) defaults to on and records it; thereafter we honor the
+/// user's choice and only touch the registration when it actually differs.
+fn reconcile_autostart(app: &tauri::AppHandle) -> bool {
+    let pref = match load_autostart_pref() {
+        Some(p) => p,
+        None => {
+            save_autostart_pref(true);
+            true
+        }
+    };
+    let mgr = app.autolaunch();
+    let cur = mgr.is_enabled().unwrap_or(false);
+    if pref && !cur {
+        let _ = mgr.enable();
+    } else if !pref && cur {
+        let _ = mgr.disable();
+    }
+    pref
 }
 
 /// Current calendar-week and calendar-month identifiers, matching parser.rs's
@@ -474,8 +520,14 @@ fn show_popover(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
-    let dash = parser::build_dashboard();
+async fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
+    // build_dashboard does blocking IO (reads/writes the cache, parses logs) and
+    // holds BUILD_LOCK — running it inline would block the command on the async
+    // runtime and, with a large cache, stall the UI. Hop to a blocking worker
+    // (the 30s refresh thread already runs the same work off the main thread).
+    let dash = tauri::async_runtime::spawn_blocking(parser::build_dashboard)
+        .await
+        .unwrap_or_else(|_| parser::build_dashboard());
     // Sync the tray count to this freshly-fetched value. The panel refetches the
     // instant it opens, while the tray otherwise only refreshes every 30s — so
     // without this the two could disagree for up to 30s during heavy usage.
@@ -580,8 +632,11 @@ pub fn run() {
                 active: AtomicBool::new(false),
             });
 
-            // Launch at login (idempotent — safe to call every start).
-            let _ = app.autolaunch().enable();
+            // Reconcile launch-at-login with the user's saved preference. The
+            // on/off toggle lives in the tray's right-click menu (built below);
+            // we do NOT force-enable on every start, which would undo a manual
+            // opt-out. `autostart_on` seeds the menu checkbox.
+            let autostart_on = reconcile_autostart(app.handle());
 
             // Popover behaviour. On macOS, convert the window to a non-activating
             // NSPanel so it can float over apps in native fullscreen, and hide it
@@ -654,8 +709,28 @@ pub fn run() {
 
             let open_i = MenuItem::with_id(app, "open", "Open Tokenscope", true, None::<&str>)?;
             let refresh_i = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
+            // Launch-at-login toggle (a checkbox item). Seeded from the reconciled
+            // preference; clicking it flips the OS registration and persists.
+            let autostart_i = CheckMenuItem::with_id(
+                app,
+                "autostart",
+                "Launch at Login",
+                true,
+                autostart_on,
+                None::<&str>,
+            )?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open_i, &refresh_i, &quit_i])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &open_i,
+                    &refresh_i,
+                    &PredefinedMenuItem::separator(app)?,
+                    &autostart_i,
+                    &PredefinedMenuItem::separator(app)?,
+                    &quit_i,
+                ],
+            )?;
 
             let lh_tray = last_hidden.clone();
             let _tray = TrayIconBuilder::with_id("main")
@@ -717,13 +792,35 @@ pub fn run() {
                         }
                     }
                 })
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
                     "open" => show_popover(app),
                     "refresh" => refresh(app),
+                    "autostart" => {
+                        // Flip the OS registration, re-read the real state, mirror
+                        // it into the checkbox, and persist the user's choice.
+                        let mgr = app.autolaunch();
+                        let enabled = mgr.is_enabled().unwrap_or(false);
+                        let _ = if enabled { mgr.disable() } else { mgr.enable() };
+                        let now_on = mgr.is_enabled().unwrap_or(!enabled);
+                        let _ = autostart_i.set_checked(now_on);
+                        save_autostart_pref(now_on);
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .build(app)?;
+
+            // Load prices off the main thread (the fetch can block ~20s on a
+            // cold/stale cache) and refresh once a day. build_dashboard reads the
+            // memoized copy, so neither JSON parsing nor the network ever runs
+            // while BUILD_LOCK is held.
+            std::thread::spawn(|| {
+                pricing::Pricing::reload_shared();
+                loop {
+                    std::thread::sleep(Duration::from_secs(24 * 60 * 60));
+                    pricing::Pricing::reload_shared();
+                }
+            });
 
             // Background refresh: keep the tray's token count current and push
             // live updates to an open popover. Cheap thanks to incremental ingest.
