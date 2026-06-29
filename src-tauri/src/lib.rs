@@ -277,7 +277,12 @@ fn show_celebration(app: &tauri::AppHandle) {
 /// NSPanel: its calculate_position calls current_monitor().unwrap(), which fails
 /// for a hidden/panel window, so positioning silently no-ops (panel stays
 /// top-left). We also must add the icon height ourselves (see position_panel).
-#[cfg(target_os = "macos")]
+///
+/// On Windows the positioner's BottomRight anchors to the raw screen rect, not
+/// the work area, so the popover overlaps the taskbar. Capturing the tray rect
+/// here and computing position ourselves (see position_popover_windows) puts
+/// the popover's bottom flush with the tray icon's top — i.e. just above the
+/// taskbar — regardless of taskbar height or DPI.
 struct TrayAnchor(std::sync::Mutex<Option<(f64, f64, f64, f64)>>);
 
 /// Anchor the panel under the tray icon, top flush with the menu-bar bottom:
@@ -315,6 +320,61 @@ fn position_panel(app: &tauri::AppHandle) {
         let x = mp.x as f64 + (ms.width as f64 - win_w) / 2.0;
         let y = mp.y as f64 + 24.0 * monitor.scale_factor();
         let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    }
+}
+
+/// Anchor the popover above the tray icon on Windows/Linux, matching macOS's
+/// menu-bar feel but in reverse: the tray sits at the *bottom* of the screen,
+/// so the popover's *bottom* edge aligns with the tray icon's top — i.e. just
+/// above the taskbar. tauri-plugin-positioner's BottomRight would work in
+/// principle, but it anchors to the raw monitor rect (no taskbar exclusion),
+/// so the popover ends up overlapping the system tray. Using the cached tray
+/// rect sidesteps that — and works for arbitrary taskbar heights, DPI scales,
+/// and taskbar positions (top/left/right too, via the y < 0 fallback).
+#[cfg(not(target_os = "macos"))]
+fn position_popover_windows(app: &tauri::AppHandle) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(size) = w.outer_size() else {
+        return;
+    };
+    let win_w = size.width as f64;
+    let win_h = size.height as f64;
+
+    let anchor = app
+        .try_state::<TrayAnchor>()
+        .and_then(|s| *s.0.lock().unwrap());
+
+    if let Some((tx, ty, tw, th)) = anchor {
+        let mut x = tx + tw / 2.0 - win_w / 2.0;
+        // Tray at the bottom of the screen (the usual case) → grow upward.
+        // Tray at the top (rare; user moved the taskbar) → grow downward.
+        let mut y = ty - win_h;
+        if y < 0.0 {
+            y = ty + th;
+        }
+        // Clamp horizontally inside the current monitor so a tray icon near
+        // the screen edge doesn't push the popover off-screen.
+        if let Ok(Some(m)) = w.current_monitor() {
+            let mp = m.position();
+            let ms = m.size();
+            let left = mp.x as f64;
+            let right = mp.x as f64 + ms.width as f64;
+            if x < left {
+                x = left;
+            }
+            if x + win_w > right {
+                x = right - win_w;
+            }
+        }
+        let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    } else {
+        // First show before any tray click (e.g. opened from the menu) →
+        // fall back to the plugin's BottomRight. Overlaps the taskbar by a
+        // few px but is still readable, and the very next tray click caches
+        // the rect so subsequent opens are pixel-perfect.
+        let _ = w.move_window(Position::BottomRight);
     }
 }
 
@@ -400,15 +460,9 @@ fn show_popover(app: &tauri::AppHandle) {
     }
     #[cfg(not(target_os = "macos"))]
     if let Some(w) = app.get_webview_window("main") {
-        // BottomRight (= window right-bottom aligned to the work area's
-        // right-bottom corner, above the taskbar) is the right anchor on
-        // Windows/Linux: the tray sits at the bottom of the screen, so
-        // TrayBottomCenter ("below the tray") would push 610px of the panel
-        // off-screen. BottomRight matches the Windows convention (Steam,
-        // Discord, qq notifications all open here) and works regardless of
-        // taskbar position because move_window uses the work area, not the
-        // raw screen rect.
-        let _ = w.move_window(Position::BottomRight);
+        // Place the popover above the tray icon (see position_popover_windows
+        // for why we don't use the positioner's BottomRight here).
+        position_popover_windows(app);
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -513,7 +567,9 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Holds the latest tray-icon rect so show_popover can anchor the panel.
-            #[cfg(target_os = "macos")]
+            // Captured in the tray click handler on every platform — see
+            // position_panel (macOS, below the icon) and position_popover_windows
+            // (Windows/Linux, above the icon).
             app.manage(TrayAnchor(std::sync::Mutex::new(None)));
 
             // 100M-token celebration tracking. Load the persisted snapshot so
@@ -613,7 +669,9 @@ pub fn run() {
                     let app = tray.app_handle();
                     tauri_plugin_positioner::on_tray_event(app, &event);
                     // Cache the tray-icon rect (physical px) for panel positioning.
-                    #[cfg(target_os = "macos")]
+                    // macOS aligns the panel under the menu-bar icon; Windows/Linux
+                    // aligns the popover *above* the icon (taskbar typically at the
+                    // bottom) — see position_panel / position_popover_windows.
                     if let TrayIconEvent::Click { rect, .. } = &event {
                         if let Some(anchor) = app.try_state::<TrayAnchor>() {
                             let p = rect.position.to_physical::<f64>(1.0);
