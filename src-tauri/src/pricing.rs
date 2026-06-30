@@ -18,6 +18,11 @@ const MODELSDEV_URL: &str = "https://models.dev/api.json";
 const LITELLM_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60); // 24h
+// Bundled LiteLLM price table snapshot — offline fallback so a first launch
+// with no network (and no prior cache) still prices the common third-party
+// models, not just the few hardcoded in `ingest_builtin`. Live sources, when
+// reachable, are ingested first and win.
+const LITELLM_SNAPSHOT: &str = include_str!("../snapshots/litellm.json");
 
 #[derive(Clone, Default)]
 pub struct ModelPrice {
@@ -55,9 +60,45 @@ fn cache_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// A models.dev payload: at least one provider with a non-empty `models` map.
+fn valid_modelsdev(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| {
+            v.as_object().map(|root| {
+                root.values().any(|p| {
+                    p.get("models")
+                        .and_then(|m| m.as_object())
+                        .map(|m| !m.is_empty())
+                        .unwrap_or(false)
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A LiteLLM payload: at least one entry carrying a per-token cost field.
+fn valid_litellm(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| {
+            v.as_object().map(|root| {
+                root.values().filter_map(|m| m.as_object()).any(|m| {
+                    m.contains_key("input_cost_per_token")
+                        || m.contains_key("output_cost_per_token")
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Read a fresh (<24h) cache for `name`, else fetch `url` & cache it, else fall
-/// back to any stale cache. Returns the raw JSON text.
-fn fetch_cached(name: &str, url: &str) -> Option<String> {
+/// back to any stale cache. Returns the raw JSON text. `valid` gates what gets
+/// written to the cache: a 200 carrying a JSON error envelope (CDN/proxy/rate
+/// limit) would otherwise poison the cache for 24h with zero usable prices, so
+/// we only persist a body that actually parses as a price table — and keep the
+/// previous good cache otherwise.
+fn fetch_cached(name: &str, url: &str, valid: impl Fn(&str) -> bool) -> Option<String> {
     let path = cache_dir()?.join(format!("{name}.json"));
     if let Ok(meta) = fs::metadata(&path) {
         let fresh = meta
@@ -72,10 +113,10 @@ fn fetch_cached(name: &str, url: &str) -> Option<String> {
             }
         }
     }
-    // fetch fresh
+    // fetch fresh — only overwrite the cache if the body validates as a table
     if let Ok(resp) = ureq::get(url).timeout(Duration::from_secs(10)).call() {
         if let Ok(text) = resp.into_string() {
-            if text.trim_start().starts_with('{') {
+            if valid(&text) {
                 let _ = fs::write(&path, &text);
                 return Some(text);
             }
@@ -92,14 +133,17 @@ impl Pricing {
             norm: HashMap::new(),
         };
         // 1. models.dev — primary (inserted first, so it wins on conflict)
-        if let Some(text) = fetch_cached("modelsdev", MODELSDEV_URL) {
+        if let Some(text) = fetch_cached("modelsdev", MODELSDEV_URL, valid_modelsdev) {
             p.ingest_modelsdev(&text);
         }
         // 2. LiteLLM — fills gaps models.dev doesn't cover
-        if let Some(text) = fetch_cached("litellm", LITELLM_URL) {
+        if let Some(text) = fetch_cached("litellm", LITELLM_URL, valid_litellm) {
             p.ingest_litellm(&text);
         }
-        // 3. built-in backstop (offline first run)
+        // 3. bundled LiteLLM snapshot — offline fallback for anything the live
+        //    sources didn't supply (only fills gaps; live prices already won).
+        p.ingest_litellm(LITELLM_SNAPSHOT);
+        // 4. built-in backstop (a handful of core models, last resort)
         p.ingest_builtin();
         p
     }

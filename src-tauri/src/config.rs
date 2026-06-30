@@ -13,14 +13,17 @@ fn home() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-/// Read ~/.claude.json -> mcpServers (top level) + projects[*].mcpServers
-fn load_user_mcps() -> HashSet<String> {
-    let mut set = HashSet::new();
-    let Some(h) = home() else { return set };
-    let path = h.join(".claude.json");
-    let Ok(text) = fs::read_to_string(&path) else { return set };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return set };
+/// Parse ~/.claude.json once (None if missing/unreadable/invalid).
+fn read_user_config() -> Option<serde_json::Value> {
+    let path = home()?.join(".claude.json");
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
 
+/// mcpServers (top level) + projects[*].mcpServers from a parsed ~/.claude.json.
+fn mcps_from(json: Option<&serde_json::Value>) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let Some(json) = json else { return set };
     if let Some(obj) = json.get("mcpServers").and_then(|v| v.as_object()) {
         for k in obj.keys() {
             set.insert(k.clone());
@@ -38,20 +41,6 @@ fn load_user_mcps() -> HashSet<String> {
     set
 }
 
-/// Project paths registered in ~/.claude.json (keys of `projects`).
-fn project_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let Some(h) = home() else { return roots };
-    let Ok(text) = fs::read_to_string(h.join(".claude.json")) else { return roots };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return roots };
-    if let Some(projects) = json.get("projects").and_then(|v| v.as_object()) {
-        for key in projects.keys() {
-            roots.push(PathBuf::from(key));
-        }
-    }
-    roots
-}
-
 /// Add each subdirectory name of `dir` to the set (skills are folders).
 fn scan_skill_dir(dir: &Path, set: &mut HashSet<String>) {
     if let Ok(entries) = fs::read_dir(dir) {
@@ -65,22 +54,24 @@ fn scan_skill_dir(dir: &Path, set: &mut HashSet<String>) {
     }
 }
 
-/// User-installed skills = global ~/.claude/skills/ + each project's
-/// <project>/.claude/skills/ (mirrors how MCP reads project-level servers).
+/// User-installed skills = global ~/.claude/skills/ only (PRD §3.3). Project-
+/// level skill dirs are intentionally not scanned: the PRD defines the skill
+/// source as the global directory, and folding in every registered project's
+/// dir inflated the "installed skills" metric.
 fn load_user_skills() -> HashSet<String> {
     let mut set = HashSet::new();
-    let Some(h) = home() else { return set };
-    scan_skill_dir(&h.join(".claude").join("skills"), &mut set);
-    for root in project_roots() {
-        scan_skill_dir(&root.join(".claude").join("skills"), &mut set);
+    if let Some(h) = home() {
+        scan_skill_dir(&h.join(".claude").join("skills"), &mut set);
     }
     set
 }
 
 impl UserConfig {
     pub fn load() -> Self {
+        // Parse ~/.claude.json a single time and derive the MCP whitelist from it.
+        let json = read_user_config();
         UserConfig {
-            mcp_servers: load_user_mcps(),
+            mcp_servers: mcps_from(json.as_ref()),
             skills: load_user_skills(),
         }
     }
