@@ -138,22 +138,29 @@ const Label = ({ t, children }: { t: Theme; children: React.ReactNode }) => (
   <span style={{ font: `600 10px ${t.ui}`, color: t.dim, letterSpacing: ".05em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{children}</span>
 );
 
-function ThemeToggle({ dark, theme, onToggle }: { dark: boolean; theme: Theme; onToggle: () => void }) {
+function ThemeToggle({ pref, theme, onCycle }: { pref: "dark" | "light" | "system"; theme: Theme; onCycle: () => void }) {
   const t = theme;
+  // Single button cycling Dark → Light → System; the icon shows the current mode.
+  const label = pref === "system" ? "System" : pref === "dark" ? "Dark" : "Light";
   return (
-    <button onClick={onToggle} title={dark ? "Switch to light" : "Switch to dark"} aria-label="toggle theme" style={{
+    <button onClick={onCycle} title={`Theme: ${label} (click to change)`} aria-label={`theme: ${label}`} style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
       width: 26, height: 26, borderRadius: 7, cursor: "pointer", padding: 0,
       background: t.segBg, border: `1px solid ${t.segBorder}`, color: t.dim,
     }}>
-      {dark ? (
+      {pref === "light" ? (
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.dim} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="4.2" />
           <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.1 5.1l1.6 1.6M17.3 17.3l1.6 1.6M18.9 5.1l-1.6 1.6M6.7 17.3l-1.6 1.6" />
         </svg>
-      ) : (
+      ) : pref === "dark" ? (
         <svg width="14" height="14" viewBox="0 0 24 24" fill={t.dim} stroke="none">
           <path d="M21 12.9A9 9 0 1 1 11.1 3a7.2 7.2 0 0 0 9.9 9.9z" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.dim} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="4.5" width="18" height="12.5" rx="1.6" />
+          <path d="M8.5 20.5h7M12 17v3.5" />
         </svg>
       )}
     </button>
@@ -182,8 +189,14 @@ function ScreenshotButton({ theme, busy, onClick }: { theme: Theme; busy: boolea
   );
 }
 
-function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard; dark: boolean; onToggleTheme: () => void; openGen: number; active: boolean }) {
+function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash: Dashboard; dark: boolean; themePref: "dark" | "light" | "system"; onToggleTheme: () => void; openGen: number; active: boolean }) {
   const t = TH[dark ? "dark" : "light"];
+  // Drag the popover by its body (Windows/Linux only — macOS uses the menu-bar
+  // NSPanel and is gated out). A real OS window-drag begins only once the
+  // pointer moves past a small threshold, so a plain click still clicks through
+  // / dismisses and never arms the hide-suppression guard.
+  const canDrag = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window && !navigator.userAgent.includes("Macintosh");
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
   const [period, setPeriod] = useState<"Day" | "Week" | "Month">("Week");
   const P: PeriodReport = period === "Day" ? dash.day : period === "Month" ? dash.month : dash.week;
   const M = P.metrics;
@@ -259,11 +272,30 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
       background: "transparent", padding: 0,
       fontFamily: t.ui,
     }}>
-      <div className="om-scroll" style={{
+      <div className="om-scroll"
+        onMouseDown={canDrag ? (e) => {
+          // Record the press; the real drag only starts once the pointer moves
+          // past the threshold (onMouseMove). Skip interactive controls
+          // (data-no-drag) and non-left buttons so clicks still register.
+          if (e.button !== 0) return;
+          if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
+          dragRef.current = { x: e.clientX, y: e.clientY };
+        } : undefined}
+        onMouseMove={canDrag ? (e) => {
+          const s = dragRef.current;
+          if (!s) return;
+          const dx = e.clientX - s.x, dy = e.clientY - s.y;
+          if (dx * dx + dy * dy >= 16) { // ~4px → a drag, not a click
+            dragRef.current = null;
+            invoke("begin_drag").catch(() => {});
+          }
+        } : undefined}
+        onMouseUp={canDrag ? () => { dragRef.current = null; } : undefined}
+        style={{
         width: "100%", height: "100%", overflowY: "auto",
         borderRadius: 12, background: dark ? "#1f2226" : "#ffffff",
         border: `1px solid ${dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)"}`,
-        padding: 0, color: t.text,
+        padding: 0, color: t.text, cursor: canDrag ? "grab" : undefined,
       }}>
         {/* sticky header — stays put while the body scrolls */}
         <div style={{
@@ -277,9 +309,9 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
             <TokenGlyph color={t.accent} size={16} />
             <span style={{ font: `600 13px ${t.ui}`, color: t.text, letterSpacing: ".01em" }}>Tokenscope</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div data-no-drag="" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "default" }}>
             <Segmented value={period} theme={t} onSelect={(v) => setPeriod(v as any)} />
-            <ThemeToggle dark={dark} theme={t} onToggle={onToggleTheme} />
+            <ThemeToggle pref={themePref} theme={t} onCycle={onToggleTheme} />
             <ScreenshotButton theme={t} busy={shotBusy} onClick={captureScreenshot} />
           </div>
         </div>
@@ -394,15 +426,31 @@ export default function App() {
   const [err, setErr] = useState<string | null>(null);
   const [openGen, setOpenGen] = useState(0);
   const [focused, setFocused] = useState(true); // browser preview: always "focused"
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
+  // Theme preference: explicit Dark / Light, or System (follows the OS
+  // appearance live on both macOS and Windows via prefers-color-scheme). First
+  // run defaults to System.
+  const [themePref, setThemePref] = useState<"dark" | "light" | "system">(() => {
     const saved = typeof localStorage !== "undefined" ? localStorage.getItem("tokenscope-theme") : null;
-    if (saved === "dark" || saved === "light") return saved;
-    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    if (saved === "dark" || saved === "light" || saved === "system") return saved;
+    return "system";
   });
-  const dark = theme === "dark";
-  const toggleTheme = () =>
-    setTheme((p) => {
-      const n = p === "dark" ? "light" : "dark";
+  const [systemDark, setSystemDark] = useState<boolean>(
+    () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
+  // Follow the OS appearance live while in System mode (and keep it current for
+  // an instant switch back to System).
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  const dark = themePref === "system" ? systemDark : themePref === "dark";
+  // Cycle Dark → Light → System on each click; persist the choice.
+  const cycleTheme = () =>
+    setThemePref((p) => {
+      const n = p === "dark" ? "light" : p === "light" ? "system" : "dark";
       try { localStorage.setItem("tokenscope-theme", n); } catch {}
       return n;
     });
@@ -420,10 +468,24 @@ export default function App() {
 
     const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
     if (!inTauri) return;
+    // Under StrictMode the effect mounts → cleans up → remounts; the async
+    // listen()/onFocusChanged() promises can resolve after the first cleanup,
+    // so unregister any late arrival immediately instead of leaking a duplicate.
+    let dead = false;
     const unlisten: Array<() => void> = [];
+    const track = (u: () => void) => {
+      if (dead) u();
+      else unlisten.push(u);
+    };
     // live updates pushed from the background refresh thread — swaps the data in
     // place (no Loading), so values update without any flicker.
-    listen<Dashboard>("dashboard-updated", (e) => apply(e.payload)).then((u) => unlisten.push(u));
+    listen<Dashboard>("dashboard-updated", (e) => apply(e.payload)).then(track);
+    // System appearance pushed natively from Rust (macOS). The webview's
+    // prefers-color-scheme is unreliable for our hidden, non-activating menu-bar
+    // panel, so the native event is the source of truth for System mode there;
+    // it fires once at startup (correcting any stale launch value) and on every
+    // OS theme change. Harmlessly never fires on Windows, where matchMedia works.
+    listen<boolean>("system-theme", (e) => setSystemDark(e.payload)).then(track);
     // refetch the instant the popover gains focus (i.e. is opened)
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
@@ -433,13 +495,38 @@ export default function App() {
           fetchDashboard().then(apply).catch(() => {});
         }
       })
-      .then((u) => unlisten.push(u));
-    return () => unlisten.forEach((u) => u());
+      .then(track);
+    return () => {
+      dead = true;
+      unlisten.forEach((u) => u());
+    };
   }, []);
 
   // window is transparent; the rounded card paints its own background
   useEffect(() => {
     document.body.style.background = "transparent";
+  }, [dark]);
+
+  // Suppress per-property CSS transitions across a theme flip so the panel
+  // repaints in the new theme in one step instead of cross-fading each color
+  // (see .ts-no-transition in main.tsx). A background light→dark switch lands
+  // while the panel is hidden; rAF callbacks don't run while hidden, so the
+  // class stays on until the popover is shown — the first painted frame is
+  // already the new theme with no transition, then we strip it a couple of
+  // frames later so live interactions (e.g. switching the period) animate as
+  // before. Skipped on the very first render (no prior frame to cross-fade).
+  const firstThemeRun = useRef(true);
+  useEffect(() => {
+    if (firstThemeRun.current) {
+      firstThemeRun.current = false;
+      return;
+    }
+    const el = document.documentElement;
+    el.classList.add("ts-no-transition");
+    const id = requestAnimationFrame(() =>
+      requestAnimationFrame(() => el.classList.remove("ts-no-transition"))
+    );
+    return () => cancelAnimationFrame(id);
   }, [dark]);
 
   const t = TH[dark ? "dark" : "light"];
@@ -455,5 +542,5 @@ export default function App() {
       </div>
     );
   }
-  return <Panel dash={dash} dark={dark} onToggleTheme={toggleTheme} openGen={openGen} active={focused} />;
+  return <Panel dash={dash} dark={dark} themePref={themePref} onToggleTheme={cycleTheme} openGen={openGen} active={focused} />;
 }
