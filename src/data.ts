@@ -29,7 +29,14 @@ export async function fetchDashboard(): Promise<Dashboard> {
 }
 
 // ── formatting helpers ──────────────────────────────────────────
-export const fmtTokens = (m: number) => (m >= 1 ? m.toFixed(2) + "M" : Math.round(m * 1000) + "K");
+export const fmtTokens = (m: number) => {
+  if (m >= 1) return m.toFixed(2) + "M";
+  const k = m * 1000;
+  // one decimal for sub-1K totals (e.g. "0.4K"), but only when it rounds to a
+  // non-zero label — avoid a misleadingly precise "0.0K" for tiny values.
+  if (k >= 0.05 && k < 1) return k.toFixed(1) + "K";
+  return Math.round(k) + "K";
+};
 export const fmtInt = (n: number) => n.toLocaleString("en-US");
 export const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : 0);
 export function fmtMoney(v: number) {
@@ -39,10 +46,13 @@ export function fmtMoney(v: number) {
 }
 
 export function linePath(values: number[], w: number, h: number, pad = 2) {
+  const n = values.length;
+  // Self-protect against degenerate inputs: callers pass a fixed-length series
+  // today, but a 0-point array threw (pts[0]) and a 1-point array gave NaN (÷0).
+  if (n === 0) return { d: "", px: (_i: number) => pad, py: (_v: number) => h / 2, pts: [] as [number, number][] };
   const max = Math.max(...values), min = Math.min(...values);
   const range = max - min || 1;
-  const n = values.length;
-  const px = (i: number) => pad + (i / (n - 1)) * (w - pad * 2);
+  const px = (i: number) => (n === 1 ? w / 2 : pad + (i / (n - 1)) * (w - pad * 2));
   const py = (v: number) => pad + (1 - (v - min) / range) * (h - pad * 2);
   const pts = values.map((v, i) => [px(i), py(v)] as [number, number]);
   let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;

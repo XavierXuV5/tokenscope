@@ -420,10 +420,18 @@ export default function App() {
 
     const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
     if (!inTauri) return;
+    // Under StrictMode the effect mounts → cleans up → remounts; the async
+    // listen()/onFocusChanged() promises can resolve after the first cleanup,
+    // so unregister any late arrival immediately instead of leaking a duplicate.
+    let dead = false;
     const unlisten: Array<() => void> = [];
+    const track = (u: () => void) => {
+      if (dead) u();
+      else unlisten.push(u);
+    };
     // live updates pushed from the background refresh thread — swaps the data in
     // place (no Loading), so values update without any flicker.
-    listen<Dashboard>("dashboard-updated", (e) => apply(e.payload)).then((u) => unlisten.push(u));
+    listen<Dashboard>("dashboard-updated", (e) => apply(e.payload)).then(track);
     // refetch the instant the popover gains focus (i.e. is opened)
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
@@ -433,8 +441,11 @@ export default function App() {
           fetchDashboard().then(apply).catch(() => {});
         }
       })
-      .then((u) => unlisten.push(u));
-    return () => unlisten.forEach((u) => u());
+      .then(track);
+    return () => {
+      dead = true;
+      unlisten.forEach((u) => u());
+    };
   }, []);
 
   // window is transparent; the rounded card paints its own background

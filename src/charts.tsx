@@ -100,7 +100,8 @@ export function BarChart({ data, theme, height = 96, accent, accentSoft, radius 
 export function Sparkline({ values, theme, width = 80, height = 24, accent, strokeW = 1.6 }:
   { values: number[]; theme: Theme; width?: number; height?: number; accent?: string; strokeW?: number }) {
   const t = theme; accent = accent || t.accent;
-  if (!values.length || values.every((v) => v === values[0])) values = values.length ? values : [0, 0];
+  // linePath needs >=2 points: pad a single value, default an empty series.
+  if (values.length < 2) values = values.length ? [values[0], values[0]] : [0, 0];
   const gid = useId().replace(/:/g, "");
   const { d, px } = linePath(values, width, height, strokeW + 1);
   // Apple-Stocks style: line + gradient area fading out below the curve.
