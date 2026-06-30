@@ -338,12 +338,37 @@ fn show_celebration(app: &tauri::AppHandle) {
 /// for a hidden/panel window, so positioning silently no-ops (panel stays
 /// top-left). We also must add the icon height ourselves (see position_panel).
 ///
-/// On Windows the positioner's BottomRight anchors to the raw screen rect, not
-/// the work area, so the popover overlaps the taskbar. Capturing the tray rect
-/// here and computing position ourselves (see position_popover_windows) puts
-/// the popover's bottom flush with the tray icon's top — i.e. just above the
-/// taskbar — regardless of taskbar height or DPI.
+/// On Windows the cached tray rect is used only to pick which monitor the
+/// popover opens on (see position_popover_windows); the popover itself is then
+/// pinned to that monitor's top-right work-area corner with a small margin.
 struct TrayAnchor(std::sync::Mutex<Option<(f64, f64, f64, f64)>>);
+
+/// Timestamp (ms) of the last drag start. The popover hides on focus loss; on
+/// Windows `start_dragging` enters the OS move loop which briefly blurs the
+/// window, so we ignore the hide for a short window after a drag.
+#[cfg(not(target_os = "macos"))]
+struct DragGuard(AtomicI64);
+
+/// Start dragging the borderless popover (Windows/Linux). Done via a command
+/// (not the JS drag-region) so we can record the drag start and suppress the
+/// imminent hide-on-blur. The frontend only calls this once a real drag begins.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn begin_drag(window: tauri::Window) -> Result<(), String> {
+    if let Some(g) = window.try_state::<DragGuard>() {
+        g.0.store(now_ms(), Ordering::Relaxed);
+    }
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+/// macOS uses a menu-bar NSPanel that isn't user-draggable, so begin_drag is a
+/// no-op there. It's also never invoked (the frontend gates it out) — this just
+/// keeps the shared invoke_handler list valid and guarantees zero macOS effect.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn begin_drag(_window: tauri::Window) -> Result<(), String> {
+    Ok(())
+}
 
 /// Anchor the panel under the tray icon, top flush with the menu-bar bottom:
 ///   x = tray_x + tray_width/2 − window_width/2
@@ -383,16 +408,44 @@ fn position_panel(app: &tauri::AppHandle) {
     }
 }
 
-/// Anchor the popover above the tray icon on Windows/Linux, matching macOS's
-/// menu-bar feel but in reverse: the tray sits at the *bottom* of the screen,
-/// so the popover's *bottom* edge aligns with the tray icon's top — i.e. just
-/// above the taskbar. tauri-plugin-positioner's BottomRight would work in
-/// principle, but it anchors to the raw monitor rect (no taskbar exclusion),
-/// so the popover ends up overlapping the system tray. Using the cached tray
-/// rect sidesteps that — and works for arbitrary taskbar heights, DPI scales,
-/// and taskbar positions (top/left/right too, via the y < 0 fallback).
+// ── Popover position memory (Windows/Linux) ─────────────────────────
+// The borderless popover can be dragged (a header drag region calls
+// startDragging in the frontend); we remember where the user left it and reopen
+// there next time, falling back to the default top-right when there's no saved
+// position on a connected monitor. macOS uses a menu-bar-anchored NSPanel and
+// does not persist a position.
+#[cfg(not(target_os = "macos"))]
+fn popover_pos_path() -> Option<std::path::PathBuf> {
+    let dir = dirs::data_dir()?.join("tokenscope");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("popover_pos.json"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn load_popover_pos() -> Option<(i32, i32)> {
+    let t = std::fs::read_to_string(popover_pos_path()?).ok()?;
+    serde_json::from_str(&t).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn save_popover_pos(x: i32, y: i32) {
+    if let Some(p) = popover_pos_path() {
+        if let Ok(t) = serde_json::to_string(&(x, y)) {
+            let _ = std::fs::write(p, t);
+        }
+    }
+}
+
+/// Position the popover: reopen at the user's last-dragged spot if it's still on
+/// a connected monitor, otherwise pin it to the top-right corner of the tray's
+/// monitor with a small margin. The monitor is chosen from the cached tray-icon
+/// position (so the default lands on the screen whose taskbar holds the tray
+/// icon), falling back to the current/primary monitor. We anchor to the work
+/// area (taskbar excluded), so the margin stays clean no matter where the
+/// taskbar sits. All coordinates are physical px; the margin scales with DPI.
 #[cfg(not(target_os = "macos"))]
 fn position_popover_windows(app: &tauri::AppHandle) {
+    const MARGIN: f64 = 12.0; // logical px gap from the screen edges
     let Some(w) = app.get_webview_window("main") else {
         return;
     };
@@ -400,41 +453,50 @@ fn position_popover_windows(app: &tauri::AppHandle) {
         return;
     };
     let win_w = size.width as f64;
-    let win_h = size.height as f64;
 
+    // 1. Reopen where the user last left it, if that spot is still on a connected
+    //    monitor (a since-disconnected monitor would otherwise open it off-screen
+    //    — fall through to the default). Check the title-bar midpoint, the part
+    //    the user grabs to drag, so it's always reachable.
+    if let Some((sx, sy)) = load_popover_pos() {
+        let reachable = w
+            .monitor_from_point(sx as f64 + win_w / 2.0, sy as f64 + 10.0)
+            .ok()
+            .flatten()
+            .is_some();
+        if reachable {
+            let _ = w.set_position(tauri::PhysicalPosition::new(sx, sy));
+            return;
+        }
+    }
+
+    // 2. Default: top-right of the tray's monitor work area.
+    // Prefer the monitor under the tray icon; fall back to current, then primary.
     let anchor = app
         .try_state::<TrayAnchor>()
         .and_then(|s| *s.0.lock().unwrap());
+    let monitor = anchor
+        .and_then(|(tx, ty, _, _)| w.monitor_from_point(tx, ty).ok().flatten())
+        .or_else(|| w.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
 
-    if let Some((tx, ty, tw, th)) = anchor {
-        let mut x = tx + tw / 2.0 - win_w / 2.0;
-        // Tray at the bottom of the screen (the usual case) → grow upward.
-        // Tray at the top (rare; user moved the taskbar) → grow downward.
-        let mut y = ty - win_h;
-        if y < 0.0 {
-            y = ty + th;
-        }
-        // Clamp horizontally inside the current monitor so a tray icon near
-        // the screen edge doesn't push the popover off-screen.
-        if let Ok(Some(m)) = w.current_monitor() {
-            let mp = m.position();
-            let ms = m.size();
-            let left = mp.x as f64;
-            let right = mp.x as f64 + ms.width as f64;
-            if x < left {
-                x = left;
-            }
-            if x + win_w > right {
-                x = right - win_w;
-            }
-        }
+    if let Some(m) = monitor {
+        let area = m.work_area(); // excludes the taskbar
+        let scale = m.scale_factor();
+        let margin = MARGIN * scale; // keep the visual gap DPI-consistent
+        // win_w is physical px at the window's CURRENT monitor scale; the window
+        // resizes to its fixed logical width when moved onto `m`, so convert to
+        // the TARGET monitor's scale — otherwise a mixed-DPI multi-monitor open
+        // subtracts mismatched units and clips off the right edge.
+        let cur_scale = w.scale_factor().unwrap_or(scale);
+        let win_w_on_m = win_w / cur_scale * scale;
+        let right = area.position.x as f64 + area.size.width as f64;
+        let x = right - win_w_on_m - margin;
+        let y = area.position.y as f64 + margin;
         let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
     } else {
-        // First show before any tray click (e.g. opened from the menu) →
-        // fall back to the plugin's BottomRight. Overlaps the taskbar by a
-        // few px but is still readable, and the very next tray click caches
-        // the rect so subsequent opens are pixel-perfect.
-        let _ = w.move_window(Position::BottomRight);
+        // Couldn't resolve a monitor (rare) → let the positioner place it.
+        let _ = w.move_window(Position::TopRight);
     }
 }
 
@@ -520,8 +582,8 @@ fn show_popover(app: &tauri::AppHandle) {
     }
     #[cfg(not(target_os = "macos"))]
     if let Some(w) = app.get_webview_window("main") {
-        // Place the popover above the tray icon (see position_popover_windows
-        // for why we don't use the positioner's BottomRight here).
+        // Pin the popover to the monitor's top-right corner (see
+        // position_popover_windows).
         position_popover_windows(app);
         let _ = w.show();
         let _ = w.set_focus();
@@ -625,7 +687,7 @@ pub fn run() {
     }
 
     builder
-        .invoke_handler(tauri::generate_handler![get_dashboard, save_screenshot])
+        .invoke_handler(tauri::generate_handler![get_dashboard, save_screenshot, begin_drag])
         .setup(move |app| {
             // Menu-bar–only app: no Dock icon, runs in the background.
             #[cfg(target_os = "macos")]
@@ -636,6 +698,9 @@ pub fn run() {
             // position_panel (macOS, below the icon) and position_popover_windows
             // (Windows/Linux, above the icon).
             app.manage(TrayAnchor(std::sync::Mutex::new(None)));
+            // Drag-start timestamp so a drag doesn't hide the popover (non-macOS).
+            #[cfg(not(target_os = "macos"))]
+            app.manage(DragGuard(AtomicI64::new(0)));
 
             // 100M-token celebration tracking. Load the persisted snapshot so
             // milestones survive restarts/reboots/updates; the first run ever
@@ -706,10 +771,35 @@ pub fn run() {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         lh.store(now_ms(), Ordering::Relaxed);
+                        if let Ok(p) = w.outer_position() {
+                            save_popover_pos(p.x, p.y);
+                        }
                         let _ = w.hide();
                     }
                     WindowEvent::Focused(false) => {
+                        // A hidden window's "blur" (e.g. the one Windows fires at
+                        // startup) carries a meaningless default position — only a
+                        // VISIBLE popover the user clicks away from should be saved
+                        // and hidden. Without this, startup persisted the OS's
+                        // default placement and every open snapped there.
+                        if !w.is_visible().unwrap_or(false) {
+                            return;
+                        }
+                        // A title-bar drag momentarily blurs the window (the OS
+                        // move loop); don't treat that as a click-away dismiss.
+                        let dragging = w
+                            .try_state::<DragGuard>()
+                            .map(|g| now_ms() - g.0.load(Ordering::Relaxed) < 700)
+                            .unwrap_or(false);
+                        if dragging {
+                            return;
+                        }
                         lh.store(now_ms(), Ordering::Relaxed);
+                        // Remember where the user left it (dragged or default) so
+                        // the next open reuses this spot.
+                        if let Ok(p) = w.outer_position() {
+                            save_popover_pos(p.x, p.y);
+                        }
                         let _ = w.hide();
                     }
                     _ => {}
@@ -758,8 +848,8 @@ pub fn run() {
                     tauri_plugin_positioner::on_tray_event(app, &event);
                     // Cache the tray-icon rect (physical px) for panel positioning.
                     // macOS aligns the panel under the menu-bar icon; Windows/Linux
-                    // aligns the popover *above* the icon (taskbar typically at the
-                    // bottom) — see position_panel / position_popover_windows.
+                    // uses it to pick the monitor and pins the popover to that
+                    // monitor's top-right — see position_panel / position_popover_windows.
                     if let TrayIconEvent::Click { rect, .. } = &event {
                         if let Some(anchor) = app.try_state::<TrayAnchor>() {
                             let p = rect.position.to_physical::<f64>(1.0);
