@@ -3,6 +3,7 @@ import {
   Theme, ModelStat, NamedCount, SeriesPoint, HeatDay,
   fmtInt, fmtMoney, fmtTokens, linePath, fmtHeatDate,
 } from "./data";
+import { Locale, Messages } from "./i18n";
 
 export function TokenGlyph({ color = "#1f9d63", size = 14 }: { color?: string; size?: number }) {
   return (
@@ -15,8 +16,8 @@ export function TokenGlyph({ color = "#1f9d63", size = 14 }: { color?: string; s
   );
 }
 
-export function Segmented({ value, items = ["Day", "Week", "Month"], theme, onSelect }:
-  { value: string; items?: string[]; theme: Theme; onSelect?: (v: string) => void }) {
+export function Segmented({ value, items = ["Day", "Week", "Month"], labels, theme, onSelect }:
+  { value: string; items?: string[]; labels?: Record<string, string>; theme: Theme; onSelect?: (v: string) => void }) {
   const t = theme;
   return (
     <div style={{ display: "inline-flex", padding: 2, borderRadius: 7, background: t.segBg, border: `1px solid ${t.segBorder}`, gap: 2 }}>
@@ -27,15 +28,15 @@ export function Segmented({ value, items = ["Day", "Week", "Month"], theme, onSe
             font: `600 11px ${t.ui}`, letterSpacing: ".02em", padding: "3px 11px", borderRadius: 5, cursor: "pointer", userSelect: "none",
             color: on ? t.segOnText : t.segOffText, background: on ? t.segOnBg : "transparent",
             boxShadow: on ? t.segOnShadow : "none", transition: "color .15s, background .15s",
-          }}>{it}</div>
+          }}>{labels?.[it] || it}</div>
         );
       })}
     </div>
   );
 }
 
-export function BarChart({ data, theme, height = 96, accent, accentSoft, radius = 3 }:
-  { data: SeriesPoint[]; theme: Theme; height?: number; accent?: string; accentSoft?: string; radius?: number }) {
+export function BarChart({ data, theme, copy, height = 96, accent, accentSoft, radius = 3 }:
+  { data: SeriesPoint[]; theme: Theme; copy: Messages; height?: number; accent?: string; accentSoft?: string; radius?: number }) {
   const t = theme;
   accent = accent || t.accent; accentSoft = accentSoft || t.accentSoft;
   const max = Math.max(...data.map((d) => d.input + d.cache + d.output), 1e-9);
@@ -88,7 +89,7 @@ export function BarChart({ data, theme, height = 96, accent, accentSoft, radius 
           font: `500 10px ${t.mono}`, whiteSpace: "nowrap", pointerEvents: "none", zIndex: 9999,
           boxShadow: "0 4px 14px rgba(0,0,0,0.35)" }}>
           <span style={{ color: accent, fontWeight: 600 }}>
-            {(() => { const tot = hi.input + hi.cache + hi.output; return tot === 0 ? "No tokens" : fmtTokens(tot) + " tokens"; })()}
+            {(() => { const tot = hi.input + hi.cache + hi.output; return tot === 0 ? copy.noTokens : `${fmtTokens(tot)} ${copy.tokens}`; })()}
           </span>
           <span style={{ opacity: 0.7 }}> · {hi.full}</span>
         </div>
@@ -126,8 +127,8 @@ export function Sparkline({ values, theme, width = 80, height = 24, accent, stro
 const DONUT_PALETTE = ["#1f9d63", "#34c27e", "#6ad0a0", "#a7e3c5", "#4b5a52"];
 const DONUT_OVERFLOW = "#79817b";
 
-export function CostDonut({ models, theme, size = 104, thickness = 16 }:
-  { models: ModelStat[]; theme: Theme; size?: number; thickness?: number }) {
+export function CostDonut({ models, theme, locale, size = 104, thickness = 16 }:
+  { models: ModelStat[]; theme: Theme; locale: Locale; size?: number; thickness?: number }) {
   const t = theme;
   const [hi, setHi] = useState(-1);
   // Rank by cost (desc) and recolor by that rank — usage from most to least.
@@ -158,7 +159,7 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
   });
   const cur = hi >= 0 ? models[hi] : null;
   const amount = cur ? cur.cost : total;
-  const txt = fmtMoney(amount);
+  const txt = fmtMoney(amount, locale);
   const avail = (size - 2 - thickness * 2) * 0.98;
   const base = cur ? 15 : 17;
   const fit = Math.min(base, Math.max(10, avail / (txt.length * 0.62)));
@@ -195,7 +196,7 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
             style={{ display: "flex", alignItems: "center", gap: 7, padding: "2.5px 0", opacity: hi === -1 || hi === i ? 1 : 0.45, transition: "opacity .14s", cursor: "default", userSelect: "none" }}>
             <span style={{ width: 7, height: 7, borderRadius: 2, background: m.color, flex: "0 0 auto" }} />
             <span style={{ font: `500 10.5px ${t.ui}`, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, fontWeight: hi === i ? 600 : 500 }}>{m.name.replace("Claude ", "")}</span>
-            <span style={{ font: `600 10.5px ${t.mono}`, color: hi === i ? m.color : t.dim, flex: "0 0 auto" }}>{fmtMoney(m.cost)}</span>
+            <span style={{ font: `600 10.5px ${t.mono}`, color: hi === i ? m.color : t.dim, flex: "0 0 auto" }}>{fmtMoney(m.cost, locale)}</span>
           </div>
         ))}
       </div>
@@ -203,8 +204,8 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
   );
 }
 
-export function BarList({ items, theme, accent, limit = 5 }:
-  { items: NamedCount[]; theme: Theme; accent?: string; limit?: number }) {
+export function BarList({ items, theme, copy, locale, accent, limit = 5 }:
+  { items: NamedCount[]; theme: Theme; copy: Messages; locale: Locale; accent?: string; limit?: number }) {
   const t = theme; accent = accent || t.accent;
   const [open, setOpen] = useState(false);
   const shown = items.slice(0, open ? items.length : limit);
@@ -225,19 +226,19 @@ export function BarList({ items, theme, accent, limit = 5 }:
           <div style={{ flex: 1, height: 5, borderRadius: 3, background: t.gridLine, overflow: "hidden" }}>
             <div style={{ width: `${(it.count / max) * 100}%`, height: "100%", background: accent, borderRadius: 3 }} />
           </div>
-          <span style={{ font: `600 10.5px ${t.mono}`, color: t.dim, flex: "0 0 auto", minWidth: 30, textAlign: "right" }}>{fmtInt(it.count)}</span>
+          <span style={{ font: `600 10.5px ${t.mono}`, color: t.dim, flex: "0 0 auto", minWidth: 30, textAlign: "right" }}>{fmtInt(it.count, locale)}</span>
         </div>
       ))}
       {more > 0 && (
         <div onClick={() => setOpen(true)} style={{ font: `500 9.5px ${t.ui}`, color: t.faint, paddingTop: 4, cursor: "pointer", userSelect: "none" }}
           onMouseEnter={(e) => (e.currentTarget.style.color = t.dim)} onMouseLeave={(e) => (e.currentTarget.style.color = t.faint)}>
-          +{more} more
+          {copy.moreItems(more)}
         </div>
       )}
       {open && items.length > limit && (
         <div onClick={() => setOpen(false)} style={{ font: `500 9.5px ${t.ui}`, color: t.faint, paddingTop: 4, cursor: "pointer", userSelect: "none" }}
           onMouseEnter={(e) => (e.currentTarget.style.color = t.dim)} onMouseLeave={(e) => (e.currentTarget.style.color = t.faint)}>
-          show less
+          {copy.showLess}
         </div>
       )}
     </div>
@@ -250,8 +251,8 @@ function ramp(accent: string, lvl: number, gridLine: string, card: string) {
   return `color-mix(in srgb, ${accent} ${Math.round(op * 100)}%, ${card})`;
 }
 
-export function Heatmap({ days, theme, accent, gap = 2 }:
-  { days: HeatDay[]; theme: Theme; accent?: string; gap?: number }) {
+export function Heatmap({ days, theme, copy, locale, accent, gap = 2 }:
+  { days: HeatDay[]; theme: Theme; copy: Messages; locale: Locale; accent?: string; gap?: number }) {
   const t = theme; accent = accent || t.accent;
   const [hi, setHi] = useState<HeatDay | null>(null);
   const [tip, setTip] = useState({ x: 0, y: 0 });
@@ -285,7 +286,7 @@ export function Heatmap({ days, theme, accent, gap = 2 }:
       }
     }
   });
-  const MN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const MN = copy.months;
   const onCell = (d: HeatDay, e: React.MouseEvent) => {
     // viewport coords → tooltip uses position:fixed so it isn't clipped by the
     // scrolling card's overflow (renders on top of the panel).
@@ -313,9 +314,9 @@ export function Heatmap({ days, theme, accent, gap = 2 }:
         ))}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end", marginTop: 8, font: `500 8.5px ${t.mono}`, color: t.faint }}>
-        <span>Less</span>
+        <span>{copy.less}</span>
         {[0, 1, 2, 3, 4].map((l) => (<span key={l} style={{ width: 9, height: 9, borderRadius: 2, background: ramp(accent!, l, t.gridLine, t.card) }} />))}
-        <span>More</span>
+        <span>{copy.more}</span>
       </div>
       {hi && (
         <div style={{
@@ -325,8 +326,8 @@ export function Heatmap({ days, theme, accent, gap = 2 }:
           background: t.tip, color: "#fff", borderRadius: 6, padding: "5px 8px",
           font: `500 10px ${t.mono}`, whiteSpace: "nowrap", pointerEvents: "none", zIndex: 9999,
           boxShadow: "0 4px 14px rgba(0,0,0,0.35)" }}>
-          <span style={{ color: accent, fontWeight: 600 }}>{hi.tokens === 0 ? "No calls" : fmtTokens(hi.tokens) + " tokens"}</span>
-          <span style={{ opacity: 0.7 }}> · {fmtHeatDate(hi.date)}</span>
+          <span style={{ color: accent, fontWeight: 600 }}>{hi.tokens === 0 ? copy.noCalls : `${fmtTokens(hi.tokens)} ${copy.tokens}`}</span>
+          <span style={{ opacity: 0.7 }}> · {fmtHeatDate(hi.date, locale)}</span>
         </div>
       )}
     </div>

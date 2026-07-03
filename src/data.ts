@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { Locale, localeToIntl } from "./i18n";
 
 export interface SeriesPoint { label: string; full: string; input: number; cache: number; output: number }
 export interface ModelStat { name: string; vendor: string; tokens: number; cost: number; color: string; priced: boolean }
@@ -37,12 +38,12 @@ export const fmtTokens = (m: number) => {
   if (k >= 0.05 && k < 1) return k.toFixed(1) + "K";
   return Math.round(k) + "K";
 };
-export const fmtInt = (n: number) => n.toLocaleString("en-US");
+export const fmtInt = (n: number, locale: Locale = "en") => n.toLocaleString(localeToIntl(locale));
 export const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : 0);
-export function fmtMoney(v: number) {
+export function fmtMoney(v: number, locale: Locale = "en") {
   if (v >= 100000) return "$" + Math.round(v / 1000) + "K";
   if (v >= 10000) return "$" + (v / 1000).toFixed(1) + "K";
-  return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return "$" + v.toLocaleString(localeToIntl(locale), { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function linePath(values: number[], w: number, h: number, pad = 2) {
@@ -99,7 +100,7 @@ export const TH: Record<"dark" | "light", Theme> = {
   },
 };
 
-export function fmtHeatDate(iso: string) {
+export function fmtHeatDate(iso: string, locale: Locale = "en") {
   const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  return d.toLocaleDateString(localeToIntl(locale), { year: "numeric", month: "short", day: "numeric" });
 }
