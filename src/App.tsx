@@ -106,13 +106,13 @@ function MiniStat({ label, value, sub, theme, accent, children }:
   );
 }
 
-// Input/Output legend: full words by default, abbreviated to In/Out only
-// when the row would otherwise overflow the available width.
-function SplitLegend({ t, inputM, outputM, cachedPct }:
-  { t: Theme; inputM: number; outputM: number; cachedPct: number }) {
+// Cached/Rest legend: full words by default, abbreviated when the row would
+// otherwise overflow. Mirrors the split bar above (dark = cached, light = rest).
+function SplitLegend({ t, cacheM, restM, cachedPct }:
+  { t: Theme; cacheM: number; restM: number; cachedPct: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
-  const key = `${inputM}|${outputM}|${cachedPct}`;
+  const key = `${cacheM}|${restM}|${cachedPct}`;
   // reset to full labels whenever the numbers change, then re-measure
   useLayoutEffect(() => { setCompact(false); }, [key]);
   useLayoutEffect(() => {
@@ -124,8 +124,8 @@ function SplitLegend({ t, inputM, outputM, cachedPct }:
       display: "flex", alignItems: "center", gap: 14,
       font: `500 10px ${t.mono}`, color: t.dim, marginBottom: 14, whiteSpace: "nowrap", overflow: "hidden",
     }}>
-      <span><span style={{ color: t.accent }}>●</span> {compact ? "In" : "Input"} {inputM.toFixed(2)}M</span>
-      <span><span style={{ color: t.accentSoft }}>●</span> {compact ? "Out" : "Output"} {outputM.toFixed(2)}M</span>
+      <span><span style={{ color: t.accent }}>●</span> {compact ? "Cache" : "Cached"} {cacheM.toFixed(2)}M</span>
+      <span><span style={{ color: t.accentSoft }}>●</span> New {restM.toFixed(2)}M</span>
       <span style={{ color: t.faint }}>{cachedPct}% cached</span>
     </div>
   );
@@ -203,6 +203,17 @@ function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash
   // animated Total tokens: counts up from 0 on each open / period switch;
   // held at 0 while the popover is hidden so it never flashes the final value.
   const animTotal = useCountUp(M.totalTokens, `${period}:${openGen}`, active);
+  // Split bar = cached portion vs the rest (uncached input + output), as exact
+  // width percentages. Width% (not flexGrow + flexBasis:0): in the WebKit webview
+  // that combination sizes each segment to roughly its own grow factor — an
+  // absolute fraction — instead of the grow-factor *ratio*, so a lopsided split
+  // left the gray track showing through. Width% sums to exactly 100%. The dark
+  // segment is the cache share (matching the "% cached" label); "rest" is wider
+  // than output-alone would be, so a small non-cached share still reads on the
+  // pill-shaped bar. Ratios are exact, never floored.
+  const splitTot = M.inputTokens + M.cacheTokens + M.outputTokens;
+  const cachePct = splitTot > 0 ? (M.cacheTokens / splitTot) * 100 : 0;
+  const restPct = splitTot > 0 ? ((M.inputTokens + M.outputTokens) / splitTot) * 100 : 0;
   const models = P.models;
   // Hide noise: 0% token-share rows, and $0 entries in the cost donut.
   // Show models whose share is at least 0.1% when rounded to 1 decimal; below
@@ -331,15 +342,15 @@ function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash
             <div style={{ font: `600 18px ${t.mono}`, color: t.accent, marginTop: 2 }}>${M.cost.toFixed(2)}</div>
           </div>
         </div>
-        {/* input(+cache) / output split — 2-colour; cache hits fold into input.
-            When there's no usage the bar is just the empty track (no slivers). */}
-        <div style={{ display: "flex", gap: 0, height: 7, borderRadius: 4, overflow: "hidden", marginBottom: 5, background: t.gridLine }}>
+        {/* cached vs rest (uncached input + output) — 2-colour pill. Dark segment
+            is the cache share, matching the "% cached" label below. */}
+        <div style={{ display: "flex", height: 7, borderRadius: 4, overflow: "hidden", marginBottom: 5, background: t.gridLine }}>
           {M.totalTokens > 0 && <>
-            <div style={{ flexGrow: Math.max(M.inputTokens + M.cacheTokens, 1e-6), flexBasis: 0, minWidth: 4, background: t.accent }} />
-            <div style={{ flexGrow: Math.max(M.outputTokens, 1e-6), flexBasis: 0, minWidth: 4, background: t.accentSoft }} />
+            <div style={{ width: `${cachePct}%`, background: t.accent }} />
+            <div style={{ width: `${restPct}%`, background: t.accentSoft }} />
           </>}
         </div>
-        <SplitLegend t={t} inputM={M.inputTokens + M.cacheTokens} outputM={M.outputTokens} cachedPct={pct(M.cacheTokens, M.totalTokens)} />
+        <SplitLegend t={t} cacheM={M.cacheTokens} restM={M.inputTokens + M.outputTokens} cachedPct={pct(M.cacheTokens, M.totalTokens)} />
         {/* bar chart */}
         <BarChart data={P.series} theme={t} height={84} />
         <SectionRule t={t} m="14px 0 10px" />

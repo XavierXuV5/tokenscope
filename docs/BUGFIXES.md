@@ -167,6 +167,29 @@ fix. Newest first. Useful as a reference for similar issues.
   and only render the coloured segments when `totalTokens > 0`; otherwise the
   bar is just the empty track.
 
+### 16. Total-tokens split bar didn't fill — gray track showed through
+
+- **Symptom**: The 2-colour split bar under Total tokens read as only partly
+  filled — coloured segments on the left, gray track visible on the right —
+  instead of always 100% when there was usage. Most visible when the split was
+  lopsided (e.g. right after clearing stats, with output ≈ 0).
+- **Cause**: The two segments used `flexGrow` + `flexBasis: 0` (+ `minWidth: 4`).
+  In the WebKit webview that combination sizes each segment to roughly **its own
+  grow factor as an absolute fraction of the bar**, not the **grow-factor ratio**
+  — so `flexGrow` 0.10 vs 1e-6 covered ~10% of the bar, not ~100%, and the track
+  showed through. The data was correct (verified by dumping `build_dashboard`'s
+  JSON and computing the expected ratio); only the rendering was wrong.
+- **Fix** (`src/App.tsx`): use explicit `width: X%` instead of `flexGrow`
+  (interpreted correctly, always sums to exactly 100%). While here, re-purposed
+  the bar from input+cache vs output to **cached vs rest (uncached input +
+  output)**: the dark segment is the cache share (matching the "% cached" label),
+  and "rest" is wider than output-alone, so a small non-cached share still reads
+  past the pill's rounded corner without distorting the ratio. Pill shape kept;
+  the `SplitLegend` below was changed from "Input / Output" to "Cached / New" to
+  match. (A temporary "清零" tray menu item — clearing the cache and
+  fast-forwarding ingest offsets — was used to reproduce the lopsided state, then
+  removed.)
+
 ---
 
 ## Theme
